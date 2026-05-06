@@ -170,25 +170,45 @@ void showUI(MountainMap& myMap) {
 }
 
 int main() {
+    // 解決中文亂碼問題
+    // system("chcp 65001");
+
     MountainMap myMap;
 
-    // 1. 建立站點
-    myMap.addStation("轉運站A");
-    myMap.addStation("熱門景點B");
-    myMap.addStation("山區秘境C");
+    // 1. 建立具備規模感的站點 (0-6)
+    myMap.addStation("A0 城市轉運站");      // 起點
+    myMap.addStation("B1 觀光老街");        // 中間站
+    myMap.addStation("B2 雲海咖啡廳");      // 中間站
+    myMap.addStation("C1 森林遊樂區");      // 靠近終點
+    myMap.addStation("C2 陡坡觀景台");      // 極陡路徑點
+    myMap.addStation("D0 終點秘境湖泊");    // 終點
+    myMap.addStation("X1 繞遠路大橋");      // 用於展示平緩但遙遠的路徑
 
-    // 2. 建立路段 (起點, 終點, 距離, 平均轉向角, 轉彎頻率)
-    // A -> B: 15km, 很平 (20度, 每km 1次)
-    myMap.addRoad(0, 1, 15.0, 20.0, 1.0); 
-    // A -> C: 5km, 極彎 (150度, 每km 6次)
-    myMap.addRoad(0, 2, 5.0, 150.0, 6.0);  
-    // C -> B: 4km, 頗彎 (100度, 每km 5次)
-    myMap.addRoad(2, 1, 4.0, 100.0, 5.0);  
+    // 2. 建立具備決策衝突的路段 (from, to, dist, avg_angle, freq)
+    
+    // --- 路徑 A: 經典捷徑 (距離短但極度彎曲，模擬九彎十八拐) ---
+    myMap.addRoad(0, 2, 8.0, 140.0, 7.5);  // A0 -> B2: 近但極彎
+    myMap.addRoad(2, 4, 4.0, 155.0, 8.0);  // B2 -> C2: 持續極彎
+    myMap.addRoad(4, 5, 3.0, 130.0, 6.0);  // C2 -> D0: 最後衝刺
 
+    // --- 路徑 B: 中庸之道 (距離適中，彎度一般) ---
+    myMap.addRoad(0, 1, 10.0, 45.0, 2.0);  // A0 -> B1: 稍遠但平緩
+    myMap.addRoad(1, 3, 7.0, 60.0, 3.0);   // B1 -> C1: 中等彎度
+    myMap.addRoad(3, 5, 6.0, 55.0, 2.5);   // C1 -> D0: 穩定抵達
+
+    // --- 路徑 C: 極致平緩繞遠路 (給超級敏感乘客的備案) ---
+    myMap.addRoad(0, 6, 18.0, 15.0, 0.5);  // A0 -> X1: 非常遠但幾乎是直線
+    myMap.addRoad(6, 3, 12.0, 20.0, 0.8);  // X1 -> C1: 保持平穩
+    
+    // 補足一些連接支線增加搜尋深度
+    myMap.addRoad(1, 2, 5.0, 90.0, 4.0);   // B1 -> B2
+    myMap.addRoad(3, 4, 3.0, 100.0, 5.0);  // C1 -> C2
+
+    // 3. 執行 UI 介面
     showUI(myMap);
 
     cout << "\n--------------------" << endl;
-    cout << "感謝使用山區小巴導航系統！" << endl;
+    cout << "專案展示完成，請存檔後提交 GitHub。" << endl;
     system("pause");
     return 0;
 }
