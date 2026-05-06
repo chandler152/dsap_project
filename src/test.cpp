@@ -188,6 +188,7 @@ int main() {
     showUI(myMap);
 
     cout << "\n--------------------" << endl;
+    cout << "感謝使用山區小巴導航系統！" << endl;
     system("pause");
     return 0;
 }
