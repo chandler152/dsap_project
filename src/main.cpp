@@ -362,11 +362,22 @@ public:
         }
         cout << endl;
 
+        bool direct_route1 =
+            path.size() == 2 && path[0] == 0 && path[1] == 3 && leg_route_tag[3] == 1;
+
         if (via_scenic) {
             cout << "預估本次行程總耗時: " << total_time << " 分鐘" << endl;
             cout << "\n【系統決策核心分析】：雖然路線三之地理距離較遠、行駛時間較長，但由於中途行經著名景點【孟宗竹林古戰場】，"
                  << "其強大的觀光吸引力與旅遊價值，成功彌補並抵消了繞路的時間與生理成本。"
                  << "因此系統判定此繞路規劃極具觀光效益，優先推薦此路線！" << endl;
+        } else if (direct_route1 && sensitivity >= SENSITIVITY_ROUTE_THRESHOLD) {
+            cout << "預估本次行程總耗時: " << total_time << " 分鐘" << endl;
+            cout << "\n【系統決策核心分析】：本次乘客平均敏感度達 " << sensitivity
+                 << "（≥ " << SENSITIVITY_ROUTE_THRESHOLD
+                 << " 門檻），系統判定團體暈車風險偏高，應優先降低連續彎道帶來的生理負擔。"
+                 << "依決策門檻規則，系統採用路線一（151 縣道直達），以單段直達取代觀光繞路（竹山→古戰場→溪頭），"
+                 << "避免多段接駁與額外轉彎刺激；觀光吸引力不足以抵消高敏感度下的行車不適。"
+                 << "因此系統略過路線三，優先推薦此直達路線！" << endl;
         }
 
         cout << "[效能分析] 本次決策共進行了 " << relaxation_count
