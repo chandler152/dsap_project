@@ -134,6 +134,8 @@ System Modeling：特徵工程：將複雜的地理資訊（Nodes）萃取為對
   ↓
 輸出「導航決策報告」
   ↓
+演算法效能比較實驗（Dijkstra + 最小堆 vs Bellman-Ford + 邊集合）
+  ↓
 程式結束（pause）
 
 4.敏感度來源統計

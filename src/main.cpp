@@ -8,6 +8,9 @@
 #include <fstream>
 #include <sstream>
 #include <cstdio>
+#include <chrono>
+#include <functional>
+#include <iomanip>
 
 using namespace std;
 
@@ -61,6 +64,26 @@ struct Node {
         return current_weight > other.current_weight;
     }
 };
+
+struct GraphEdge {
+    int from;
+    int to;
+    float dist;
+    float avg_angle;
+    float frequency;
+    int route_tag;
+};
+
+struct PathSearchResult {
+    bool found = false;
+    vector<int> path;
+    vector<int> leg_route_tag;
+    float total_weight = numeric_limits<float>::infinity();
+    int relaxation_count = 0;
+    double elapsed_us = 0.0;
+};
+
+const int ALGORITHM_BENCHMARK_ROUNDS = 2000;
 
 class FeatureExtractor {
 public:
@@ -171,6 +194,7 @@ class MountainMap {
 public:
     vector<Station> stations;
     vector<vector<Road>> adj;
+    vector<GraphEdge> edges;
 
     void addStation(const string& name, float tourism_attraction = 0.0f) {
         int id = static_cast<int>(stations.size());
@@ -181,9 +205,15 @@ public:
     void addRoad(int from, int to, float dist, float angle, float freq, int route_tag = 0) {
         const int n = static_cast<int>(adj.size());
         if (from < 0 || to < 0 || from >= n || to >= n) return;
-        Road e = {to, dist, angle, freq, route_tag};
-        adj[from].push_back(e);
-        adj[to].push_back(e);
+        adj[from].push_back({to, dist, angle, freq, route_tag});
+        adj[to].push_back({from, dist, angle, freq, route_tag});
+        edges.push_back({from, to, dist, angle, freq, route_tag});
+        edges.push_back({to, from, dist, angle, freq, route_tag});
+    }
+
+    float graphEdgeWeight(int from, const GraphEdge& e, float sensitivity) const {
+        Road r = {e.to, e.dist, e.avg_angle, e.frequency, e.route_tag};
+        return edgeEffectiveWeight(from, r, sensitivity);
     }
 
     const Road* findRoad(int from, int to, int route_tag = -1) const {
@@ -235,7 +265,7 @@ public:
         return oss.str();
     }
 
-    vector<int> reconstructPath(const vector<int>& parent, int end) {
+    vector<int> reconstructPath(const vector<int>& parent, int end) const {
         vector<int> path;
         for (int at = end; at != -1; at = parent[at]) {
             path.push_back(at);
@@ -258,6 +288,168 @@ public:
             if (edge) total_time += edge->getDriveTimeMinutes();
         }
         return total_time;
+    }
+
+    string formatPath(const vector<int>& path) const {
+        ostringstream oss;
+        for (size_t i = 0; i < path.size(); ++i) {
+            oss << stations[path[i]].name;
+            if (i + 1 < path.size()) oss << " -> ";
+        }
+        return oss.str();
+    }
+
+    PathSearchResult dijkstraShortestPath(int start, int end, float sensitivity) const {
+        PathSearchResult result;
+        const int n = static_cast<int>(adj.size());
+        result.leg_route_tag.assign(n, -1);
+
+        vector<float> min_weight(n, numeric_limits<float>::infinity());
+        vector<int> parent(n, -1);
+        priority_queue<Node, vector<Node>, greater<Node>> pq;
+
+        min_weight[start] = 0.0f;
+        pq.push({start, 0.0f});
+
+        while (!pq.empty()) {
+            Node top = pq.top();
+            pq.pop();
+
+            int u = top.id;
+            if (top.current_weight > min_weight[u]) continue;
+            if (u == end) break;
+
+            for (const auto& edge : adj[u]) {
+                float weight = edgeEffectiveWeight(u, edge, sensitivity);
+                result.relaxation_count++;
+
+                if (min_weight[u] + weight < min_weight[edge.to]) {
+                    min_weight[edge.to] = min_weight[u] + weight;
+                    parent[edge.to] = u;
+                    result.leg_route_tag[edge.to] = edge.route_tag;
+                    pq.push({edge.to, min_weight[edge.to]});
+                }
+            }
+        }
+
+        if (min_weight[end] == numeric_limits<float>::infinity()) {
+            return result;
+        }
+
+        result.found = true;
+        result.path = reconstructPath(parent, end);
+        result.total_weight = min_weight[end];
+        return result;
+    }
+
+    PathSearchResult bellmanFordShortestPath(int start, int end, float sensitivity) const {
+        PathSearchResult result;
+        const int n = static_cast<int>(adj.size());
+        result.leg_route_tag.assign(n, -1);
+
+        vector<float> dist(n, numeric_limits<float>::infinity());
+        vector<int> parent(n, -1);
+        dist[start] = 0.0f;
+
+        for (int round = 0; round < n - 1; ++round) {
+            bool updated = false;
+            for (const auto& e : edges) {
+                if (dist[e.from] == numeric_limits<float>::infinity()) continue;
+
+                float weight = graphEdgeWeight(e.from, e, sensitivity);
+                result.relaxation_count++;
+
+                if (dist[e.from] + weight < dist[e.to]) {
+                    dist[e.to] = dist[e.from] + weight;
+                    parent[e.to] = e.from;
+                    result.leg_route_tag[e.to] = e.route_tag;
+                    updated = true;
+                }
+            }
+            if (!updated) break;
+        }
+
+        if (dist[end] == numeric_limits<float>::infinity()) {
+            return result;
+        }
+
+        result.found = true;
+        result.path = reconstructPath(parent, end);
+        result.total_weight = dist[end];
+        return result;
+    }
+
+    static double benchmarkSearch(function<PathSearchResult()> search_fn,
+                                PathSearchResult& last_result) {
+        for (int i = 0; i < 5; ++i) {
+            last_result = search_fn();
+        }
+
+        auto t0 = chrono::high_resolution_clock::now();
+        for (int i = 0; i < ALGORITHM_BENCHMARK_ROUNDS; ++i) {
+            last_result = search_fn();
+        }
+        auto t1 = chrono::high_resolution_clock::now();
+        return chrono::duration<double, micro>(t1 - t0).count() /
+               static_cast<double>(ALGORITHM_BENCHMARK_ROUNDS);
+    }
+
+    void printAlgorithmComparison(int start, int end, float sensitivity) const {
+        PathSearchResult dijkstra_result;
+        PathSearchResult bellman_result;
+
+        double dijkstra_us = benchmarkSearch(
+            [&]() { return dijkstraShortestPath(start, end, sensitivity); }, dijkstra_result);
+        double bellman_us = benchmarkSearch(
+            [&]() { return bellmanFordShortestPath(start, end, sensitivity); }, bellman_result);
+
+        cout << "\n================ 演算法效能比較實驗 ================" << endl;
+        cout << "比較情境：起點 [" << start << "] " << stations[start].name
+             << " → 終點 [" << end << "] " << stations[end].name
+             << "，敏感度 " << sensitivity << endl;
+        cout << "路網規模：站點 " << stations.size() << " 個、有向邊 "
+             << edges.size() << " 條（含雙向）" << endl;
+        cout << fixed << setprecision(4);
+        cout << "\n| 演算法 | 核心資料結構 | 最短路徑權重 | 邊緣鬆弛次數 | 平均耗時(µs) |" << endl;
+        cout << "|--------|--------------|--------------|--------------|-------------|" << endl;
+
+        auto printRow = [&](const string& name, const string& ds, const PathSearchResult& r,
+                            double us) {
+            cout << "| " << name << " | " << ds << " | ";
+            if (!r.found) {
+                cout << "無路徑 | " << r.relaxation_count << " | " << us << " |" << endl;
+                return;
+            }
+            cout << r.total_weight << " | " << r.relaxation_count << " | " << us << " |" << endl;
+        };
+
+        printRow("Dijkstra", "最小堆 priority_queue", dijkstra_result, dijkstra_us);
+        printRow("Bellman-Ford", "邊集合 vector<GraphEdge>", bellman_result, bellman_us);
+
+        if (dijkstra_result.found && bellman_result.found) {
+            const float weight_diff = fabs(dijkstra_result.total_weight - bellman_result.total_weight);
+            cout << "\n最短路徑權重差異: " << weight_diff;
+            cout << (weight_diff < 0.001f ? "（兩者一致，驗證正確）" : "（請檢查圖形設定）") << endl;
+            cout << "Dijkstra 路徑: " << formatPath(dijkstra_result.path) << endl;
+            cout << "Bellman-Ford 路徑: " << formatPath(bellman_result.path) << endl;
+
+            if (bellman_result.relaxation_count > 0 && dijkstra_result.relaxation_count > 0) {
+                const double relax_ratio =
+                    static_cast<double>(bellman_result.relaxation_count) /
+                    static_cast<double>(dijkstra_result.relaxation_count);
+                cout << "鬆弛次數比 (Bellman-Ford / Dijkstra): " << relax_ratio << " 倍" << endl;
+            }
+            if (dijkstra_us > 0.0) {
+                cout << "耗時比 (Bellman-Ford / Dijkstra): " << (bellman_us / dijkstra_us)
+                     << " 倍（重複 " << ALGORITHM_BENCHMARK_ROUNDS << " 次平均）" << endl;
+            }
+        }
+
+        cout << "\n【比較結論】本專題路網邊權皆為非負值，兩者理論上應得到相同最短路徑。" << endl;
+        cout << "Dijkstra 搭配最小堆，適合稀疏圖單源最短路，平均約 O((V+E)log V)。" << endl;
+        cout << "Bellman-Ford 反覆鬆弛所有邊，最壞 O(V×E)，可處理負權但本專題未使用。" << endl;
+        cout << "正式導航決策採用 Dijkstra；上方為期末 Demo 之演算法效能對照實驗。" << endl;
+        cout << "====================================================" << endl;
     }
 
     bool selectPathBySensitivity(int start, int end, float sensitivity,
@@ -305,45 +497,21 @@ public:
         float total_weight = numeric_limits<float>::infinity();
         int relaxation_count = 0;
 
+        bool used_sensitivity_rule = false;
         if (selectPathBySensitivity(start, end, sensitivity, path, leg_route_tag,
                                     total_weight, relaxation_count)) {
             if (path.empty()) return;
+            used_sensitivity_rule = true;
         } else {
-            vector<float> min_weight(n, numeric_limits<float>::infinity());
-            vector<int> parent(n, -1);
-            priority_queue<Node, vector<Node>, greater<Node>> pq;
-
-            min_weight[start] = 0.0f;
-            pq.push({start, 0.0f});
-
-            while (!pq.empty()) {
-                Node top = pq.top();
-                pq.pop();
-
-                int u = top.id;
-                if (top.current_weight > min_weight[u]) continue;
-                if (u == end) break;
-
-                for (const auto& edge : adj[u]) {
-                    float weight = edgeEffectiveWeight(u, edge, sensitivity);
-                    relaxation_count++;
-
-                    if (min_weight[u] + weight < min_weight[edge.to]) {
-                        min_weight[edge.to] = min_weight[u] + weight;
-                        parent[edge.to] = u;
-                        leg_route_tag[edge.to] = edge.route_tag;
-                        pq.push({edge.to, min_weight[edge.to]});
-                    }
-                }
-            }
-
-            if (min_weight[end] == numeric_limits<float>::infinity()) {
+            PathSearchResult dijkstra = dijkstraShortestPath(start, end, sensitivity);
+            if (!dijkstra.found) {
                 cout << "抱歉，無法找到可到達的路徑。" << endl;
                 return;
             }
-
-            path = reconstructPath(parent, end);
-            total_weight = min_weight[end];
+            path = dijkstra.path;
+            leg_route_tag = dijkstra.leg_route_tag;
+            total_weight = dijkstra.total_weight;
+            relaxation_count = dijkstra.relaxation_count;
         }
         float total_time = computePathDriveTime(path);
         bool via_scenic = pathContains(path, SCENIC_BATTLEFIELD_ID);
@@ -380,9 +548,14 @@ public:
                  << "因此系統略過路線三，優先推薦此直達路線！" << endl;
         }
 
-        cout << "[效能分析] 本次決策共進行了 " << relaxation_count
+        cout << "[效能分析] 本次正式決策共進行了 " << relaxation_count
              << " 次邊緣鬆弛(Relaxation)運算。" << endl;
+        if (used_sensitivity_rule) {
+            cout << "（0→3 敏感度門檻規則已啟用，上列為業務決策路徑，非完整圖搜尋）" << endl;
+        }
         cout << "==============================================" << endl;
+
+        printAlgorithmComparison(start, end, sensitivity);
     }
 
     void printMap() {
